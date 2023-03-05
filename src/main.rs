@@ -1,7 +1,18 @@
+use std::sync::Arc;
+
 #[repr(u8)]
 enum OpCode {
-    Return = 1,
-    Constant = 0,
+    Constant,
+    Return,
+    Negate,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+} 
+
+fn as_opcode(bytecode : u8) -> OpCode {
+    unsafe {std::mem::transmute::<u8, OpCode>(bytecode)}    
 }
 
 type Value = f64;
@@ -17,7 +28,12 @@ impl Chunk {
         Chunk{instructions : vec![], lines : vec![], constants : vec![]}
     }
 
-    fn append_instruction(&mut self, val : u8, line : usize) {
+    fn append_instruction(&mut self, val : OpCode, line : usize) {
+        self.instructions.push(val as u8);
+        self.lines.push(line);
+    }
+
+    fn append_parameter(&mut self, val : u8, line : usize) {
         self.instructions.push(val);
         self.lines.push(line);
     }
@@ -65,9 +81,7 @@ impl Chunk {
           print!("{:04} ", self.lines.get(offset).unwrap());
         }
 
-        let instruction = unsafe {
-            std::mem::transmute::<u8, OpCode>(*(self.instructions.get(offset).unwrap()))
-        };
+        let instruction =  as_opcode(*(self.instructions.get(offset).unwrap()));
 
         match instruction {
             OpCode::Return => {
@@ -75,18 +89,135 @@ impl Chunk {
             },
             OpCode::Constant => {
                 self.constant_instruction("OP_CONSTANT", offset)
-            }
+            },
+            OpCode::Negate => {
+                Self::simple_instruction("OP_NEGATE", offset)
+            },
+            OpCode::Add => {
+                Self::simple_instruction("OP_ADD", offset)
+            },
+            OpCode::Subtract => {
+                Self::simple_instruction("OP_SUB", offset)
+            },
+            OpCode::Multiply => {
+                Self::simple_instruction("OP_MUL", offset)
+            },
+            OpCode::Divide => {
+                Self::simple_instruction("OP_DIV", offset)
+            },
         }
     }
 }
 
+enum InterpretResult{
+    Ok,
+    CompileError,
+    RuntimeError,
+}
+
+struct VM<const DebugTrace : bool> {
+    chunk : Option<Arc<Chunk>>,
+    ip : usize,
+    stack : Vec<Value>,
+}
+
+impl<const DebugTrace : bool> VM<DebugTrace> {
+    fn create() -> Self {
+        VM{chunk: Option::None, ip : 0, stack: vec![]}
+    }
+
+    fn interpret(&mut self, chunk : Arc<Chunk>) -> InterpretResult {
+        self.chunk = Some(chunk);
+        self.ip = 0;
+        self.run()
+    }
+
+    fn push(&mut self, v : Value) {
+        self.stack.push(v);
+    }
+
+    fn pop(&mut self) -> Value {
+        self.stack.pop().unwrap()
+    }
+
+    fn run (&mut self) -> InterpretResult {
+        let chunk_ref = self.chunk.as_ref().unwrap().as_ref();
+
+        loop {
+            if DebugTrace {
+                println!("stack: {:?}", self.stack);
+                chunk_ref.disassemble_instruction(self.ip);
+            }
+
+            let instruction = as_opcode(*chunk_ref.instructions.get(self.ip).unwrap());
+            self.ip += 1;
+
+            match instruction {
+                OpCode::Return => {
+                    println!("{}", self.stack.pop().unwrap());
+                    return InterpretResult::Ok
+                },
+                OpCode::Constant => {
+                    let constant_id = *chunk_ref.instructions.get(self.ip).unwrap(); 
+                    self.ip += 1;
+                    let constant_value : Value = *chunk_ref.constants.get(constant_id as usize).unwrap();
+                    self.stack.push(constant_value);
+                },
+                OpCode::Negate => {
+                    let v = self.stack.pop().unwrap();
+                    self.stack.push(-v);
+                },
+                OpCode::Add => {
+                    let rhs = self.stack.pop().unwrap();
+                    let lhs = self.stack.pop().unwrap();
+                    self.stack.push(lhs+rhs);
+                },
+                OpCode::Subtract => {
+                    let rhs = self.stack.pop().unwrap();
+                    let lhs = self.stack.pop().unwrap();
+                    self.stack.push(lhs-rhs);
+                },
+                OpCode::Multiply => {
+                    let rhs = self.stack.pop().unwrap();
+                    let lhs = self.stack.pop().unwrap();
+                    self.stack.push(lhs*rhs);
+                },
+                OpCode::Divide => {
+                    let rhs = self.stack.pop().unwrap();
+                    let lhs = self.stack.pop().unwrap();
+                    self.stack.push(lhs/rhs);
+                },
+            }
+        }
+    }
+
+}
+
 fn main() {
     let mut chunk = Chunk::new();
+    let mut vm = VM::<true>::create();
 
-    let constant = chunk.append_constant(1.2);
-    chunk.append_instruction(OpCode::Constant as u8, 123);
-    chunk.append_instruction(constant, 123);
-    chunk.append_instruction(OpCode::Return as u8, 123);
+    let c1 = chunk.append_constant(1.2);
+    let c2 = chunk.append_constant(3.4);
+    let c3 = chunk.append_constant(5.6);
+
+    chunk.append_instruction(OpCode::Constant, 123);
+    chunk.append_parameter(c1, 123);
+    chunk.append_instruction(OpCode::Constant, 123);
+    chunk.append_parameter(c2, 123);
+  
+    chunk.append_instruction(OpCode::Add, 123);
+  
+    chunk.append_instruction(OpCode::Constant, 123);
+    chunk.append_parameter(c3, 123);
+  
+    chunk.append_instruction(OpCode::Divide, 123);
+
+    chunk.append_instruction(OpCode::Negate, 123);
+    chunk.append_instruction(OpCode::Return, 123);
+
+    let chunk = Arc::new(chunk);
+    vm.interpret(chunk.clone());
 
     chunk.disassemble("test chunk");
 }
